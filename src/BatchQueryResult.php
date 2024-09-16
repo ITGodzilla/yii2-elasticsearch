@@ -1,13 +1,14 @@
 <?php
 /**
- * @link http://www.yiiframework.com/
+ * @link https://www.yiiframework.com/
  * @copyright Copyright (c) 2008 Yii Software LLC
- * @license http://www.yiiframework.com/license/
+ * @license https://www.yiiframework.com/license/
  */
 
 namespace yii\elasticsearch;
 
-use yii\base\Object;
+use ReturnTypeWillChange;
+use yii\base\BaseObject;
 
 /**
  * BatchQueryResult represents a batch query from which you can retrieve data in batches.
@@ -21,7 +22,7 @@ use yii\base\Object;
  *
  * If [[Query::$orderBy]] parameter is not set, batches will be processed using the highly efficient "scan" mode.
  * In this case, [[Query::$limit]] setting determines batch size per shard.
- * See [elasticsearch guide](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-scroll.html)
+ * See [Elasticsearch guide](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-scroll.html)
  * for more information.
  *
  * Example:
@@ -37,7 +38,7 @@ use yii\base\Object;
  * @author Konstantin Sirotkin <beowulfenator@gmail.com>
  * @since 2.0.4
  */
-class BatchQueryResult extends Object implements \Iterator
+class BatchQueryResult extends BaseObject implements \Iterator
 {
     /**
      * @var Connection the DB connection to be used when performing batch query.
@@ -72,12 +73,12 @@ class BatchQueryResult extends Object implements \Iterator
     private $_key;
     /**
      * @var string the amount of time to keep the scroll window open
-     * (in ElasticSearch [time units](https://www.elastic.co/guide/en/elasticsearch/reference/current/common-options.html#time-units).
+     * (in Elasticsearch [time units](https://www.elastic.co/guide/en/elasticsearch/reference/current/common-options.html#time-units).
      */
     public $scrollWindow = '1m';
 
     /*
-     * @var string internal ElasticSearch scroll id
+     * @var string internal Elasticsearch scroll id
      */
     private $_lastScrollId = null;
 
@@ -111,6 +112,7 @@ class BatchQueryResult extends Object implements \Iterator
      * Resets the iterator to the initial state.
      * This method is required by the interface [[\Iterator]].
      */
+    #[ReturnTypeWillChange]
     public function rewind()
     {
         $this->reset();
@@ -121,6 +123,7 @@ class BatchQueryResult extends Object implements \Iterator
      * Moves the internal pointer to the next dataset.
      * This method is required by the interface [[\Iterator]].
      */
+    #[ReturnTypeWillChange]
     public function next()
     {
         if ($this->_batch === null || !$this->each || $this->each && next($this->_batch) === false) {
@@ -153,17 +156,15 @@ class BatchQueryResult extends Object implements \Iterator
             //first query - do search
             $options = ['scroll' => $this->scrollWindow];
             if(!$this->query->orderBy) {
-                $options['search_type'] = 'scan';
+                $query = clone $this->query;
+                $query->orderBy('_doc');
+                $cmd = $this->query->createCommand($this->db);
+            } else {
+                $cmd = $this->query->createCommand($this->db);
             }
-            $result = $this->query->createCommand($this->db)->search($options);
-
-            //if using "scan" mode, make another request immediately
-            //(search request returned 0 results)
-            if(!$this->query->orderBy) {
-                $result = $this->query->createCommand($this->db)->scroll([
-                    'scroll_id' => $result['_scroll_id'],
-                    'scroll' => $this->scrollWindow,
-                ]);
+            $result = $cmd->search($options);
+            if ($result === false) {
+                throw new Exception('Elasticsearch search query failed.');
             }
         } else {
             //subsequent queries - do scroll
@@ -183,8 +184,9 @@ class BatchQueryResult extends Object implements \Iterator
     /**
      * Returns the index of the current dataset.
      * This method is required by the interface [[\Iterator]].
-     * @return integer the index of the current row.
+     * @return int the index of the current row.
      */
+    #[ReturnTypeWillChange]
     public function key()
     {
         return $this->_key;
@@ -195,6 +197,7 @@ class BatchQueryResult extends Object implements \Iterator
      * This method is required by the interface [[\Iterator]].
      * @return mixed the current dataset.
      */
+    #[ReturnTypeWillChange]
     public function current()
     {
         return $this->_value;
@@ -203,8 +206,9 @@ class BatchQueryResult extends Object implements \Iterator
     /**
      * Returns whether there is a valid dataset at the current position.
      * This method is required by the interface [[\Iterator]].
-     * @return boolean whether there is a valid dataset at the current position.
+     * @return bool whether there is a valid dataset at the current position.
      */
+    #[ReturnTypeWillChange]
     public function valid()
     {
         return !empty($this->_batch);

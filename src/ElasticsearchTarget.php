@@ -1,4 +1,9 @@
 <?php
+/**
+ * @link https://www.yiiframework.com/
+ * @copyright Copyright (c) 2008 Yii Software LLC
+ * @license https://www.yiiframework.com/license/
+ */
 
 namespace yii\elasticsearch;
 
@@ -12,7 +17,7 @@ use yii\log\Logger;
 use yii\log\Target;
 
 /**
- * ElasticsearchTarget stores log messages in a elasticsearch index.
+ * ElasticsearchTarget stores log messages in a Elasticsearch index.
  *
  * @author Eugene Terentev <eugene@terentev.net>
  * @since 2.0.5
@@ -28,8 +33,8 @@ class ElasticsearchTarget extends Target
      */
     public $type = 'log';
     /**
-     * @var Connection|array|string the elasticsearch connection object or the application component ID
-     * of the elasticsearch connection.
+     * @var Connection|array|string the Elasticsearch connection object or the application component ID
+     * of the Elasticsearch connection.
      */
     public $db = 'elasticsearch';
     /**
@@ -49,6 +54,7 @@ class ElasticsearchTarget extends Target
      * @var boolean If true, context message will cached once it's been created. Makes sense to use with [[includeContext]].
      */
     public $cacheContext = false;
+
     /**
      * @var string Context message cache (can be used multiple times if context is appended to every message)
      */
@@ -72,7 +78,11 @@ class ElasticsearchTarget extends Target
     {
         $messages = array_map([$this, 'prepareMessage'], $this->messages);
         $body = implode("\n", $messages) . "\n";
-        $this->db->post([$this->index, $this->type, '_bulk'], $this->options, $body);
+        if ($this->db->dslVersion >= 7) {
+            $this->db->post([$this->index, '_bulk'], $this->options, $body);
+        } else {
+            $this->db->post([$this->index, $this->type, '_bulk'], $this->options, $body);
+        }
     }
 
     /**
@@ -97,7 +107,7 @@ class ElasticsearchTarget extends Target
      * Depending on the [[includeContext]] attribute, a context message will be either created or ignored.
      * @param array $messages log messages to be processed. See [[Logger::messages]] for the structure
      * of each message.
-     * @param boolean $final whether this method is called at the end of the current application
+     * @param bool $final whether this method is called at the end of the current application
      */
     public function collect($messages, $final)
     {
@@ -140,20 +150,15 @@ class ElasticsearchTarget extends Target
             $result['trace'] = $message[4];
         }
 
-        //Exceptions get parsed into an array, text and arrays are passed as is, other types are var_dumped
-        if ($text instanceof \Exception) {
-            //convert exception to array for easier analysis
-            $result['message'] = [
-                'message' => $text->getMessage(),
-                'file' => $text->getFile(),
-                'line' => $text->getLine(),
-                'trace' => $text->getTraceAsString(),
-            ];
-        } elseif (is_array($text) || is_string($text)) {
-            $result['message'] = $text;
-        } else {
-            $result['message'] = VarDumper::export($text);
+        if (!is_string($text)) {
+            // exceptions may not be serializable if in the call stack somewhere is a Closure
+            if ($text instanceof \Throwable || $text instanceof \Exception) {
+                $text = (string) $text;
+            } else {
+                $text = VarDumper::export($text);
+            }
         }
+        $result['message'] = $text;
 
         if ($this->includeContext) {
             $result['context'] = $this->getContextMessage();

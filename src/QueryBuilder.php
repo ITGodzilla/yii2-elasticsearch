@@ -1,23 +1,24 @@
 <?php
 /**
- * @link http://www.yiiframework.com/
+ * @link https://www.yiiframework.com/
  * @copyright Copyright (c) 2008 Yii Software LLC
- * @license http://www.yiiframework.com/license/
+ * @license https://www.yiiframework.com/license/
  */
 
 namespace yii\elasticsearch;
 
-use yii\base\InvalidParamException;
+use yii\base\BaseObject;
+use yii\base\InvalidArgumentException;
 use yii\base\NotSupportedException;
 use yii\helpers\Json;
 
 /**
- * QueryBuilder builds an elasticsearch query based on the specification given as a [[Query]] object.
+ * QueryBuilder builds an Elasticsearch query based on the specification given as a [[Query]] object.
  *
  * @author Carsten Brandt <mail@cebe.cc>
  * @since 2.0
  */
-class QueryBuilder extends \yii\base\Object
+class QueryBuilder extends BaseObject
 {
     /**
      * @var Connection the database connection.
@@ -46,25 +47,19 @@ class QueryBuilder extends \yii\base\Object
     {
         $parts = [];
 
-        if ($query->fields === []) {
-            $parts['fields'] = [];
-        } elseif ($query->fields !== null) {
-            $fields = [];
-            $scriptFields = [];
-            foreach ($query->fields as $key => $field) {
-                if (is_int($key)) {
-                    $fields[] = $field;
-                } else {
-                    $scriptFields[$key] = $field;
-                }
-            }
-            if (!empty($fields)) {
-                $parts['fields'] = $fields;
-            }
-            if (!empty($scriptFields)) {
-                $parts['script_fields'] = $scriptFields;
-            }
+        if ($query->storedFields !== null) {
+            $parts['stored_fields'] = $query->storedFields;
         }
+        if ($query->scriptFields !== null) {
+            $parts['script_fields'] = $query->scriptFields;
+        }
+        if ($query->runtimeMappings !== null) {
+            $parts['runtime_mappings'] = $query->runtimeMappings;
+        }
+        if ($query->fields !== null) {
+            $parts['fields'] = $query->fields;
+        }
+
         if ($query->source !== null) {
             $parts['_source'] = $query->source;
         }
@@ -81,27 +76,19 @@ class QueryBuilder extends \yii\base\Object
             $parts['explain'] = $query->explain;
         }
 
-        if (empty($query->query)) {
-            $parts['query'] = ["match_all" => (object)[]];
-        } else {
-            $parts['query'] = $query->query;
+        // combine query with where
+        $conditionals = [];
+        $whereQuery = $this->buildQueryFromWhere($query->where);
+        if ($whereQuery) {
+            $conditionals[] = $whereQuery;
         }
-
-        $whereFilter = $this->buildCondition($query->where);
-        if (is_string($query->filter)) {
-            if (empty($whereFilter)) {
-                $parts['filter'] = $query->filter;
-            } else {
-                $parts['filter'] = '{"and": [' . $query->filter . ', ' . Json::encode($whereFilter) . ']}';
-            }
-        } elseif ($query->filter !== null) {
-            if (empty($whereFilter)) {
-                $parts['filter'] = $query->filter;
-            } else {
-                $parts['filter'] = ['and' => [$query->filter, $whereFilter]];
-            }
-        } elseif (!empty($whereFilter)) {
-            $parts['filter'] = $whereFilter;
+        if ($query->query) {
+            $conditionals[] = $query->query;
+        }
+        if (count($conditionals) === 2) {
+            $parts['query'] = ['bool' => ['must' => $conditionals]];
+        } elseif (count($conditionals) === 1) {
+            $parts['query'] = reset($conditionals);
         }
 
         if (!empty($query->highlight)) {
@@ -118,6 +105,9 @@ class QueryBuilder extends \yii\base\Object
         }
         if (!empty($query->postFilter)) {
             $parts['post_filter'] = $query->postFilter;
+        }
+        if (!empty($query->collapse)) {
+            $parts['collapse'] = $query->collapse;
         }
 
         $sort = $this->buildOrderBy($query->orderBy);
@@ -154,11 +144,13 @@ class QueryBuilder extends \yii\base\Object
             } else {
                 $column = $name;
             }
-            if ($column == '_id') {
-                $column = '_uid';
+            if ($this->db->dslVersion < 7) {
+                if ($column == '_id') {
+                    $column = '_uid';
+                }
             }
 
-            // allow elasticsearch extended syntax as described in http://www.elastic.co/guide/en/elasticsearch/guide/master/_sorting.html
+            // allow Elasticsearch extended syntax as described in https://www.elastic.co/guide/en/elasticsearch/guide/master/_sorting.html
             if (is_array($direction)) {
                 $orders[] = [$column => $direction];
             } else {
@@ -169,11 +161,25 @@ class QueryBuilder extends \yii\base\Object
         return $orders;
     }
 
+    public function buildQueryFromWhere($condition) {
+        $where = $this->buildCondition($condition);
+        if ($where) {
+            $query = [
+                'constant_score' => [
+                    'filter' => $where,
+                ],
+            ];
+            return $query;
+        } else {
+            return null;
+        }
+    }
+
     /**
      * Parses the condition specification and generates the corresponding SQL expression.
      *
      * @param string|array $condition the condition specification. Please refer to [[Query::where()]] on how to specify a condition.
-     * @throws \yii\base\InvalidParamException if unknown operator is used in query
+     * @throws \yii\base\InvalidArgumentException if unknown operator is used in query
      * @throws \yii\base\NotSupportedException if string conditions are used in where
      * @return string the generated SQL expression
      */
@@ -181,8 +187,8 @@ class QueryBuilder extends \yii\base\Object
     {
         static $builders = [
             'not' => 'buildNotCondition',
-            'and' => 'buildAndCondition',
-            'or' => 'buildAndCondition',
+            'and' => 'buildBoolCondition',
+            'or' => 'buildBoolCondition',
             'between' => 'buildBetweenCondition',
             'not between' => 'buildBetweenCondition',
             'in' => 'buildInCondition',
@@ -199,13 +205,15 @@ class QueryBuilder extends \yii\base\Object
             '>' => 'buildHalfBoundedRangeCondition',
             'gte' => 'buildHalfBoundedRangeCondition',
             '>=' => 'buildHalfBoundedRangeCondition',
+            'match' => 'buildMatchCondition',
+            'match_phrase' => 'buildMatchCondition',
         ];
 
         if (empty($condition)) {
             return [];
         }
         if (!is_array($condition)) {
-            throw new NotSupportedException('String conditions in where() are not supported by elasticsearch.');
+            throw new NotSupportedException('String conditions in where() are not supported by Elasticsearch.');
         }
         if (isset($condition[0])) { // operator format: operator, operand 1, operand 2, ...
             $operator = strtolower($condition[0]);
@@ -215,7 +223,7 @@ class QueryBuilder extends \yii\base\Object
 
                 return $this->$method($operator, $condition);
             } else {
-                throw new InvalidParamException('Found unknown operator in query: ' . $operator);
+                throw new InvalidArgumentException('Found unknown operator in query: ' . $operator);
             }
         } else { // hash format: 'column1' => 'value1', 'column2' => 'value2', ...
 
@@ -225,20 +233,20 @@ class QueryBuilder extends \yii\base\Object
 
     private function buildHashCondition($condition)
     {
-        $parts = [];
+        $parts = $emptyFields = [];
         foreach ($condition as $attribute => $value) {
             if ($attribute == '_id') {
                 if ($value === null) { // there is no null pk
-                    $parts[] = ['terms' => ['_uid' => []]]; // this condition is equal to WHERE false
+                    $parts[] = ['bool' => ['must_not' => [['match_all' => new \stdClass()]]]]; // this condition is equal to WHERE false
                 } else {
                     $parts[] = ['ids' => ['values' => is_array($value) ? $value : [$value]]];
                 }
             } else {
                 if (is_array($value)) { // IN condition
-                    $parts[] = ['in' => [$attribute => $value]];
+                    $parts[] = ['terms' => [$attribute => $value]];
                 } else {
                     if ($value === null) {
-                        $parts[] = ['missing' => ['field' => $attribute, 'existence' => true, 'null_value' => true]];
+                        $emptyFields[] = [ 'exists' => [ 'field' => $attribute ] ];
                     } else {
                         $parts[] = ['term' => [$attribute => $value]];
                     }
@@ -246,13 +254,17 @@ class QueryBuilder extends \yii\base\Object
             }
         }
 
-        return count($parts) === 1 ? $parts[0] : ['and' => $parts];
+        $query = [ 'must' => $parts ];
+        if ($emptyFields) {
+            $query['must_not'] = $emptyFields;
+        }
+        return [ 'bool' => $query ];
     }
 
     private function buildNotCondition($operator, $operands)
     {
         if (count($operands) != 1) {
-            throw new InvalidParamException("Operator '$operator' requires exactly one operand.");
+            throw new InvalidArgumentException("Operator '$operator' requires exactly one operand.");
         }
 
         $operand = reset($operands);
@@ -260,12 +272,24 @@ class QueryBuilder extends \yii\base\Object
             $operand = $this->buildCondition($operand);
         }
 
-        return [$operator => $operand];
+        return [
+            'bool' => [
+                'must_not' => $operand,
+            ],
+        ];
     }
 
-    private function buildAndCondition($operator, $operands)
+    private function buildBoolCondition($operator, $operands)
     {
         $parts = [];
+        if ($operator === 'and') {
+            $clause = 'must';
+        } else if ($operator === 'or') {
+            $clause = 'should';
+        } else {
+            throw new InvalidArgumentException("Operator should be 'or' or 'and'");
+        }
+
         foreach ($operands as $operand) {
             if (is_array($operand)) {
                 $operand = $this->buildCondition($operand);
@@ -274,26 +298,30 @@ class QueryBuilder extends \yii\base\Object
                 $parts[] = $operand;
             }
         }
-        if (!empty($parts)) {
-            return [$operator => $parts];
+        if ($parts) {
+            return [
+                'bool' => [
+                    $clause => $parts,
+                ]
+            ];
         } else {
-            return [];
+            return null;
         }
     }
 
     private function buildBetweenCondition($operator, $operands)
     {
         if (!isset($operands[0], $operands[1], $operands[2])) {
-            throw new InvalidParamException("Operator '$operator' requires three operands.");
+            throw new InvalidArgumentException("Operator '$operator' requires three operands.");
         }
 
         list($column, $value1, $value2) = $operands;
-        if ($column == '_id') {
+        if ($column === '_id') {
             throw new NotSupportedException('Between condition is not supported for the _id field.');
         }
         $filter = ['range' => [$column => ['gte' => $value1, 'lte' => $value2]]];
-        if ($operator == 'not between') {
-            $filter = ['not' => $filter];
+        if ($operator === 'not between') {
+            $filter = ['bool' => ['must_not'=>$filter]];
         }
 
         return $filter;
@@ -301,8 +329,8 @@ class QueryBuilder extends \yii\base\Object
 
     private function buildInCondition($operator, $operands)
     {
-        if (!isset($operands[0], $operands[1])) {
-            throw new InvalidParamException("Operator '$operator' requires two operands.");
+        if (!isset($operands[0], $operands[1]) || !is_array($operands)) {
+            throw new InvalidArgumentException("Operator '$operator' requires array of two operands: column and values");
         }
 
         list($column, $values) = $operands;
@@ -310,12 +338,13 @@ class QueryBuilder extends \yii\base\Object
         $values = (array)$values;
 
         if (empty($values) || $column === []) {
-            return $operator === 'in' ? ['terms' => ['_uid' => []]] : []; // this condition is equal to WHERE false
+            return $operator === 'in' ? ['bool' => ['must_not' => [['match_all' => new \stdClass()]]]] : []; // this condition is equal to WHERE false
         }
 
-        if (count($column) > 1) {
-            return $this->buildCompositeInCondition($operator, $column, $values);
-        } elseif (is_array($column)) {
+        if (is_array($column)) {
+            if (count($column) > 1) {
+                return $this->buildCompositeInCondition($operator, $column, $values);
+            }
             $column = reset($column);
         }
         $canBeNull = false;
@@ -328,37 +357,52 @@ class QueryBuilder extends \yii\base\Object
                 unset($values[$i]);
             }
         }
-        if ($column == '_id') {
+        if ($column === '_id') {
             if (empty($values) && $canBeNull) { // there is no null pk
-                $filter = ['terms' => ['_uid' => []]]; // this condition is equal to WHERE false
+                $filter = ['bool' => ['must_not' => [['match_all' => new \stdClass()]]]]; // this condition is equal to WHERE false
             } else {
                 $filter = ['ids' => ['values' => array_values($values)]];
                 if ($canBeNull) {
                     $filter = [
-                        'or' => [
-                            $filter,
-                            ['missing' => ['field' => $column, 'existence' => true, 'null_value' => true]]
-                        ]
+                        'bool' => [
+                            'should' => [
+                                $filter,
+                                'bool' => ['must_not' => ['exists' => ['field'=>$column]]],
+                            ],
+                        ],
                     ];
                 }
             }
         } else {
             if (empty($values) && $canBeNull) {
-                $filter = ['missing' => ['field' => $column, 'existence' => true, 'null_value' => true]];
+                $filter = [
+                    'bool' => [
+                        'must_not' => [
+                            'exists' => [ 'field' => $column ],
+                        ]
+                    ]
+                ];
             } else {
-                $filter = ['in' => [$column => array_values($values)]];
+                $filter = [ 'terms' => [$column => array_values($values)] ];
                 if ($canBeNull) {
                     $filter = [
-                        'or' => [
-                            $filter,
-                            ['missing' => ['field' => $column, 'existence' => true, 'null_value' => true]]
-                        ]
+                        'bool' => [
+                            'should' => [
+                                $filter,
+                                'bool' => ['must_not' => ['exists' => ['field'=>$column]]],
+                            ],
+                        ],
                     ];
                 }
             }
         }
-        if ($operator == 'not in') {
-            $filter = ['not' => $filter];
+
+        if ($operator === 'not in') {
+            $filter = [
+                'bool' => [
+                    'must_not' => $filter,
+                ],
+            ];
         }
 
         return $filter;
@@ -374,12 +418,14 @@ class QueryBuilder extends \yii\base\Object
     private function buildHalfBoundedRangeCondition($operator, $operands)
     {
         if (!isset($operands[0], $operands[1])) {
-            throw new InvalidParamException("Operator '$operator' requires two operands.");
+            throw new InvalidArgumentException("Operator '$operator' requires two operands.");
         }
 
         list($column, $value) = $operands;
-        if ($column == '_id') {
-            $column = '_uid';
+        if ($this->db->dslVersion < 7) {
+            if ($column === '_id') {
+                $column = '_uid';
+            }
         }
 
         $range_operator = null;
@@ -395,7 +441,7 @@ class QueryBuilder extends \yii\base\Object
         }
 
         if ($range_operator === null) {
-            throw new InvalidParamException("Operator '$operator' is not implemented.");
+            throw new InvalidArgumentException("Operator '$operator' is not implemented.");
         }
 
         $filter = [
@@ -411,11 +457,18 @@ class QueryBuilder extends \yii\base\Object
 
     protected function buildCompositeInCondition($operator, $columns, $values)
     {
-        throw new NotSupportedException('composite in is not supported by elasticsearch.');
+        throw new NotSupportedException('composite in is not supported by Elasticsearch.');
     }
 
     private function buildLikeCondition($operator, $operands)
     {
-        throw new NotSupportedException('like conditions are not supported by elasticsearch.');
+        throw new NotSupportedException('like conditions are not supported by Elasticsearch.');
+    }
+
+    private function buildMatchCondition($operator, $operands)
+    {
+        return [
+            $operator => [ $operands[0] => $operands[1] ]
+        ];
     }
 }

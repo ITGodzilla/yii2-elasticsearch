@@ -1,8 +1,8 @@
 <?php
 /**
- * @link http://www.yiiframework.com/
+ * @link https://www.yiiframework.com/
  * @copyright Copyright (c) 2008 Yii Software LLC
- * @license http://www.yiiframework.com/license/
+ * @license https://www.yiiframework.com/license/
  */
 
 namespace yii\elasticsearch;
@@ -13,9 +13,10 @@ use yii\helpers\Url;
 use yii\log\Logger;
 use yii\helpers\Html;
 use yii\web\View;
+use yii\web\YiiAsset;
 
 /**
- * Debugger panel that collects and displays elasticsearch queries performed.
+ * Debugger panel that collects and displays Elasticsearch queries performed.
  *
  * @author Carsten Brandt <mail@cebe.cc>
  * @since 2.0
@@ -57,7 +58,7 @@ class DebugPanel extends Panel
         $url = $this->getUrl();
         $output = <<<EOD
 <div class="yii-debug-toolbar__block">
-    <a href="$url" title="Executed $queryCount elasticsearch queries which took $queryTime.">
+    <a href="$url" title="Executed $queryCount Elasticsearch queries which took $queryTime.">
         ES <span class="yii-debug-toolbar__label yii-debug-toolbar__ajax_counter yii-debug-toolbar__label_info">$queryCount</span> <span class="yii-debug-toolbar__label">$queryTime</span>
     </a>
 </div>
@@ -71,6 +72,9 @@ EOD;
      */
     public function getDetail()
     {
+        //Register YiiAsset in order to inject csrf token in ajax requests
+        YiiAsset::register(\Yii::$app->view);
+        
         $timings = $this->calculateTimings();
         ArrayHelper::multisort($timings, 3, SORT_DESC);
         $rows = [];

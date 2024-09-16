@@ -13,47 +13,33 @@ use yiiunit\extensions\elasticsearch\ActiveRecordTest;
  * @property string $email
  * @property string $address
  * @property integer $status
+ * @property bool $is_active
  */
 class Customer extends ActiveRecord
 {
     const STATUS_ACTIVE = 1;
     const STATUS_INACTIVE = 2;
 
-    public $status2;
-
-    public static function primaryKey()
-    {
-        return ['id'];
-    }
-
     public function attributes()
     {
-        return ['id', 'name', 'email', 'address', 'status'];
+        return ['name', 'email', 'address', 'status', 'is_active'];
     }
 
     public function getOrders()
     {
-        return $this->hasMany(Order::className(), ['customer_id' => 'id'])->orderBy('created_at');
+        return $this->hasMany(Order::className(), ['customer_id' => '_id'])->orderBy('created_at');
     }
 
     public function getExpensiveOrders()
     {
-        return $this->hasMany(Order::className(), ['customer_id' => 'id'])->filter(['range' => ['total' => ['gte' => 50]]])->orderBy('id');
-    }
-
-    public function getExpensiveOrdersWithNullFK()
-    {
-        return $this->hasMany(OrderWithNullFK::className(), ['customer_id' => 'id'])->filter(['range' => ['total' => ['gte' => 50]]])->orderBy('id');
-    }
-
-    public function getOrdersWithNullFK()
-    {
-        return $this->hasMany(OrderWithNullFK::className(), ['customer_id' => 'id'])->orderBy('created_at');
+        return $this->hasMany(Order::className(), ['customer_id' => '_id'])
+            ->where([ 'gte', 'total', 50 ])
+            ->orderBy('_id');
     }
 
     public function getOrdersWithItems()
     {
-        return $this->hasMany(Order::className(), ['customer_id' => 'id'])->with('orderItems');
+        return $this->hasMany(Order::className(), ['customer_id' => '_id'])->with('orderItems');
     }
 
     public function afterSave($insert, $changedAttributes)
@@ -68,18 +54,15 @@ class Customer extends ActiveRecord
      * @param Command $command
      * @param boolean $statusIsBoolean
      */
-    public static function setUpMapping($command, $statusIsBoolean = false)
+    public static function setUpMapping($command)
     {
-        $command->deleteMapping(static::index(), static::type());
         $command->setMapping(static::index(), static::type(), [
-            static::type() => [
-                "_id" => ["path" => "id", "index" => "not_analyzed", "store" => "yes"],
-                "properties" => [
-                    "name" =>        ["type" => "string", "index" => "not_analyzed"],
-                    "email" =>       ["type" => "string", "index" => "not_analyzed"],
-                    "address" =>     ["type" => "string", "index" => "analyzed"],
-                    "status" => $statusIsBoolean ? ["type" => "boolean"] : ["type" => "integer"],
-                ]
+            "properties" => [
+                "name" => ["type" => "keyword",  "store" => true],
+                "email" => ["type" => "keyword", "store" => true],
+                "address" => ["type" => "text"],
+                "status" => ["type" => "integer", "store" => true],
+                "is_active" => ["type" => "boolean", "store" => true],
             ]
         ]);
 

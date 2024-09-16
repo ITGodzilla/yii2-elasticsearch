@@ -1,8 +1,8 @@
 <?php
 /**
- * @link http://www.yiiframework.com/
+ * @link https://www.yiiframework.com/
  * @copyright Copyright (c) 2008 Yii Software LLC
- * @license http://www.yiiframework.com/license/
+ * @license https://www.yiiframework.com/license/
  */
 
 namespace yii\elasticsearch;
@@ -12,10 +12,10 @@ use yii\base\InvalidCallException;
 use yii\helpers\Json;
 
 /**
- * The [[BulkCommand]] class implements the API for accessing the elasticsearch bulk REST API.
+ * The [[BulkCommand]] class implements the API for accessing the Elasticsearch bulk REST API.
  *
  * Further details on bulk API is available in
- * [elasticsearch guide](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-bulk.html).
+ * [Elasticsearch guide](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-bulk.html).
  *
  * @author Konstantin Sirotkin <beowulfenator@gmail.com>
  * @since 2.0.5
@@ -44,20 +44,26 @@ class BulkCommand extends Component
      */
     public $options = [];
 
+
     /**
      * Executes the bulk command.
      * @return mixed
-     * @throws yii\base\InvalidCallException
+     * @throws \yii\base\InvalidCallException
      */
     public function execute()
     {
         //valid endpoints are /_bulk, /{index}/_bulk, and {index}/{type}/_bulk
+        //for ES7+ type is omitted
         if ($this->index === null && $this->type === null) {
             $endpoint = ['_bulk'];
         } elseif ($this->index !== null && $this->type === null) {
             $endpoint = [$this->index, '_bulk'];
         } elseif ($this->index !== null && $this->type !== null) {
-            $endpoint = [$this->index, $this->type, '_bulk'];
+            if ($this->db->dslVersion >= 7) {
+                $endpoint = [$this->index, '_bulk'];
+            } else {
+                $endpoint = [$this->index, $this->type, '_bulk'];
+            }
         } else {
             throw new InvalidCallException('Invalid endpoint: if type is defined, index must be defined too.');
         }
@@ -66,8 +72,16 @@ class BulkCommand extends Component
             $body = '{}';
         } elseif (is_array($this->actions)) {
             $body = '';
+            $prettyPrintSupported = property_exists('yii\\helpers\\Json', 'prettyPrint');
+            if ($prettyPrintSupported) {
+                $originalPrettyPrint = Json::$prettyPrint;
+                Json::$prettyPrint = false; // ElasticSearch bulk API uses new lines as delimiters.
+            }
             foreach ($this->actions as $action) {
                 $body .= Json::encode($action) . "\n";
+            }
+            if ($prettyPrintSupported) {
+                Json::$prettyPrint = $originalPrettyPrint;
             }
         } else {
             $body = $this->actions;
@@ -78,7 +92,9 @@ class BulkCommand extends Component
 
     /**
      * Adds an action to the command. Will overwrite existing actions if they are specified as a string.
-     * @param array $action Action expressed as an array (will be encoded to JSON automatically).
+     * @param array $line1 First action expressed as an array (will be encoded to JSON automatically).
+     * @param array|null $line2 Second action expressed as an array (will be encoded to JSON automatically).
+     * @see https://www.elastic.co/guide/en/elasticsearch/reference/7.x/docs-bulk.html
      */
     public function addAction($line1, $line2 = null)
     {
@@ -96,9 +112,9 @@ class BulkCommand extends Component
     /**
      * Adds a delete action to the command.
      * @param string $id Document ID
-     * @param string $index Index that the document belogs to. Can be set to null if the command has
+     * @param string|null $index Index that the document belongs to. Can be set to null if the command has
      * a default index ([[BulkCommand::$index]]) assigned.
-     * @param string $type Type that the document belogs to. Can be set to null if the command has
+     * @param string|null $type Type that the document belongs to. Can be set to null if the command has
      * a default type ([[BulkCommand::$type]]) assigned.
      */
     public function addDeleteAction($id, $index = null, $type = null)

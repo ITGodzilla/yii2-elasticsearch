@@ -13,7 +13,7 @@ class CommandTest extends TestCase
     /** @var Command */
     private $command;
 
-    protected function setUp()
+    protected function setUp(): void
     {
         parent::setUp();
         $this->command = $this->getConnection()->createCommand();
@@ -81,22 +81,34 @@ class CommandTest extends TestCase
      * @dataProvider provideDataForGetAliasInfo
      *
      * @param string $index
-     * @param array|null $indexConfig
+     * @param string $type
+     * @param array $mapping
      * @param string $alias
      * @param array $expectedResult
      * @param array $aliasParameters
      */
     public function getAliasInfo_singleAliasIsSet_returnsInfoForAlias(
         $index,
-        $indexConfig,
+        $type,
+        $mapping,
         $alias,
         $expectedResult,
         $aliasParameters
     ) {
-        $this->command->createIndex($index, $indexConfig);
+        if ($this->command->indexExists($index)) {
+            $this->command->deleteIndex($index);
+        }
+        $this->command->createIndex($index);
+        if ($mapping) {
+            $this->command->setMapping($index, $type, $mapping);
+        }
         $this->command->addAlias($index, $alias, $aliasParameters);
         $actualResult = $this->command->getAliasInfo();
         $this->command->deleteIndex($index);
+
+        // order is not guaranteed
+        sort($expectedResult);
+        sort($actualResult);
 
         $this->assertEquals($expectedResult, $actualResult);
     }
@@ -107,6 +119,7 @@ class CommandTest extends TestCase
     public function provideDataForGetAliasInfo()
     {
         $index = 'alias_test';
+        $type = 'alias_test_type';
         $alias = 'test';
         $filter = [
             'filter' => [
@@ -116,15 +129,8 @@ class CommandTest extends TestCase
             ],
         ];
         $mapping = [
-            'mappings' => [
-                'type1' => [
-                    'properties' => [
-                        'user' => [
-                            'type' => 'string',
-                            'index' => 'not_analyzed',
-                        ],
-                    ],
-                ],
+            'properties' => [
+                'user' => ['type' => 'keyword'],
             ],
         ];
         $singleRouting = [
@@ -142,7 +148,8 @@ class CommandTest extends TestCase
         return [
             [
                 $index,
-                null,
+                $type,
+                $mapping,
                 $alias,
                 [
                     $index => [
@@ -155,6 +162,7 @@ class CommandTest extends TestCase
             ],
             [
                 $index,
+                $type,
                 $mapping,
                 $alias,
                 [
@@ -168,7 +176,8 @@ class CommandTest extends TestCase
             ],
             [
                 $index,
-                null,
+                $type,
+                $mapping,
                 $alias,
                 [
                     $index => [
@@ -181,7 +190,8 @@ class CommandTest extends TestCase
             ],
             [
                 $index,
-                null,
+                $type,
+                $mapping,
                 $alias,
                 [
                     $index => [
@@ -194,6 +204,7 @@ class CommandTest extends TestCase
             ],
             [
                 $index,
+                $type,
                 $mapping,
                 $alias,
                 [
@@ -207,6 +218,7 @@ class CommandTest extends TestCase
             ],
             [
                 $index,
+                $type,
                 $mapping,
                 $alias,
                 [
@@ -339,6 +351,10 @@ class CommandTest extends TestCase
         $actualResult = $this->command->getIndexesByAlias($testAlias);
         $this->command->deleteIndex($index1);
         $this->command->deleteIndex($index2);
+
+        // order is not guaranteed
+        sort($expectedResult);
+        sort($actualResult);
 
         $this->assertEquals($expectedResult, $actualResult);
     }
@@ -490,5 +506,22 @@ class CommandTest extends TestCase
         $this->command->deleteIndex($index);
 
         $this->assertTrue($actualResult);
+    }
+
+    public function testIndexStats()
+    {
+        $cmd = $this->command;
+        if (!$cmd->indexExists('command-test')) {
+            $cmd->createIndex('command-test');
+        }
+        $stats = $cmd->getIndexStats();
+        $this->assertArrayHasKey('_all', $stats, print_r(array_keys($stats), true));
+        $this->assertArrayHasKey('indices', $stats, print_r(array_keys($stats), true));
+        $this->assertArrayHasKey('command-test', $stats['indices'], print_r(array_keys($stats['indices']), true));
+
+        $stats = $cmd->getIndexStats('command-test');
+        $this->assertArrayHasKey('_all', $stats, print_r(array_keys($stats), true));
+        $this->assertArrayHasKey('indices', $stats, print_r(array_keys($stats), true));
+        $this->assertArrayHasKey('command-test', $stats['indices'], print_r(array_keys($stats['indices']), true));
     }
 }
